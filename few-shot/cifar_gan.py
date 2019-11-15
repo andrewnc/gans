@@ -10,7 +10,67 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.autograd import Variable
 from tqdm import tqdm
+def double_conv(in_channels, out_channels):
+    return nn.Sequential(
+        nn.Conv2d(in_channels, out_channels, 3, padding=1),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(out_channels, out_channels, 3, padding=1),
+        nn.ReLU(inplace=True)
+    )   
 
+
+class UNet(nn.Module):
+
+    def __init__(self, n_class):
+        super().__init__()
+                
+        self.dconv_down1 = double_conv(3, 64)
+        self.dconv_down2 = double_conv(64, 128)
+        self.dconv_down3 = double_conv(128, 256)
+        self.dconv_down4 = double_conv(256, 512)        
+
+        self.maxpool = nn.MaxPool2d(2)
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)        
+        
+        self.dconv_up3 = double_conv(256 + 512, 256)
+        self.dconv_up2 = double_conv(128 + 256, 128)
+        self.dconv_up1 = double_conv(128 + 64, 64)
+        
+        self.conv_last = nn.Conv2d(64, n_class, 1)
+        
+    # weight_init
+    def weight_init(self, mean, std):
+        for m in self._modules:
+            normal_init(self._modules[m], mean, std)
+        
+    def forward(self, x):
+        conv1 = self.dconv_down1(x)
+        x = self.maxpool(conv1)
+
+        conv2 = self.dconv_down2(x)
+        x = self.maxpool(conv2)
+        
+        conv3 = self.dconv_down3(x)
+        x = self.maxpool(conv3)   
+        
+        x = self.dconv_down4(x)
+        
+        x = self.upsample(x)        
+        x = torch.cat([x, conv3], dim=1)
+        
+        x = self.dconv_up3(x)
+        x = self.upsample(x)        
+        x = torch.cat([x, conv2], dim=1)       
+
+        x = self.dconv_up2(x)
+        x = self.upsample(x)        
+        x = torch.cat([x, conv1], dim=1)   
+        
+        x = self.dconv_up1(x)
+        
+        out = self.conv_last(x)
+        
+        return out
 # G(z)
 class generator(nn.Module):
     # initializers
@@ -77,10 +137,10 @@ def normal_init(m, mean, std):
 
 def show_result(num_epoch, show = False, save = False, path = 'result.png', isFix=False):
     try:
-        z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:5*5]
+        z_ = next(cifar_loader)[0][:5*5]
     except:
         cifar_loader = iter(cifar)
-        z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:5*5]
+        z_ = next(cifar_loader)[0][:5*5]
     # z_ = torch.randn((5*5, 100)).view(-1, 100, 1, 1)
     # no gaussian noise
     z_ = Variable(z_.cuda(), requires_grad=False)
@@ -165,8 +225,8 @@ dataset = datasets.ImageFolder(root='faces',
 
 cifar_dataset = datasets.CIFAR10(root='cifar',
         transform=transforms.Compose([
-            transforms.Resize(10),
-            transforms.CenterCrop(10),
+            transforms.Resize(64),
+            transforms.CenterCrop(64),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5,0.5,0.5)),
             ]), download=True)
@@ -178,12 +238,13 @@ cifar = torch.utils.data.DataLoader(cifar_dataset, batch_size=batch_size,
                                          shuffle=True, num_workers=4)
 cifar_loader = iter(cifar)
 #fixed_z_ = torch.randn((5 * 5, 100)).view(-1, 100, 1, 1)    # fixed noise
-fixed_z_ = next(cifar_loader)[0].view(-1,100,1,1)
+fixed_z_ = next(cifar_loader)[0]
 # fixed_z_ = fixed_z_ + torch.randn(fixed_z_.shape)/100
 fixed_z_ = Variable(fixed_z_.cuda(), requires_grad=False)
 
 # network
-G = generator(128)
+# G = generator(128)
+G = UNet(3)
 D = discriminator(128)
 G.weight_init(mean=0.0, std=0.02)
 D.weight_init(mean=0.0, std=0.02)
@@ -233,15 +294,19 @@ for epoch in range(train_epoch):
 
         #z_ = torch.randn((mini_batch, 100)).view(-1, 100, 1, 1)
         try:
-            z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:mini_batch]
+            # z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:mini_batch]
+            z_ = next(cifar_loader)[0][:mini_batch]
         except:
             cifar_loader = iter(cifar)
-            z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:mini_batch]
+            z_ = next(cifar_loader)[0][:mini_batch]
+            # z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:mini_batch]
         # z_ = z_ + torch.randn(z_.shape)/100
         z_ = Variable(z_.cuda())
         G_result = G(z_)
 
         D_result = D(G_result).squeeze()
+        if D_result.shape != y_fake_.shape:
+            continue
         D_fake_loss = BCE_loss(D_result, y_fake_)
 
         D_train_loss = D_real_loss + D_fake_loss
@@ -257,16 +322,20 @@ for epoch in range(train_epoch):
 
         #z_ = torch.randn((mini_batch, 100)).view(-1, 100, 1, 1)
         try:
-            z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:mini_batch]
+            # z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:mini_batch]
+            z_ = next(cifar_loader)[0][:mini_batch]
         except:
             cifar_loader = iter(cifar)
-            z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:mini_batch]
+            # z_ = next(cifar_loader)[0].view(-1, 100,1,1)[:mini_batch]
+            z_ = next(cifar_loader)[0][:mini_batch]
 
         # z_ = z_ + torch.randn(z_.shape)/100
         z_ = Variable(z_.cuda())
 
         G_result = G(z_)
         D_result = D(G_result).squeeze()
+        if D_result.shape != y_real_.shape:
+            continue
         G_train_loss = BCE_loss(D_result, y_real_)
         G_train_loss.backward()
         G_optimizer.step()
